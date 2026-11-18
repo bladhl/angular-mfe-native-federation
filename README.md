@@ -1,59 +1,58 @@
-# AngularMfeNativeFederation
+# Angular microfrontends with Native Federation
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 22.2.7.
+A minimal host + remote setup with Angular 22 and
+[Native Federation](https://www.npmjs.com/package/@angular-architects/native-federation).
+The shell loads the catalog's routes at runtime, the two apps communicate
+without importing each other, and the shell keeps working when the remote is down.
 
-## Development server
-
-To start a local development server, run:
-
-```bash
-ng serve
+```text
+ shell (host, :4200)                         catalog (remote, :4201)
+ ┌──────────────────────────────┐            ┌──────────────────────────┐
+ │ header: cart summary (signal)│◄── event ──│ ProductList              │
+ │ /catalog ── loadRemote() ────┼── HTTP ───►│ exposes './routes'       │
+ │ fallback if remote is down   │            │ (runs standalone too)    │
+ └──────────────────────────────┘            └──────────────────────────┘
+        federation.manifest.json → http://localhost:4201/remoteEntry.json
 ```
 
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
-
-## Code scaffolding
-
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
+## Run it
 
 ```bash
-ng generate component component-name
+pnpm install
+pnpm start:catalog   # terminal 1: remote on http://localhost:4201
+pnpm start:shell     # terminal 2: host on http://localhost:4200
 ```
 
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
+Stop the catalog and reload the shell to see the fallback.
 
 ```bash
-ng generate --help
+pnpm test     # Vitest unit tests for both apps
+pnpm build    # production builds in dist/
 ```
 
-## Building
+GitHub Actions runs format check, tests and builds on every push
+(`.github/workflows/ci.yml`).
 
-To build the project run:
+## Design decisions
 
-```bash
-ng build
-```
+| Decision                                               | Where                                            | Why                                                                                                                                                                                                                                           |
+| ------------------------------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dynamic host with a manifest                           | `projects/shell/public/federation.manifest.json` | Remote URLs change per environment without rebuilding the shell.                                                                                                                                                                              |
+| Remote exposes routes, not a component                 | `projects/catalog/federation.config.mjs`         | The remote owns its own navigation; the shell only mounts it under `/catalog`.                                                                                                                                                                |
+| Shared dependencies as singletons with `strictVersion` | `federation.config.mjs` (both)                   | One Angular runtime in the page; a version mismatch fails loudly instead of silently.                                                                                                                                                         |
+| Communication through a `CustomEvent`                  | `projects/contracts/cart-events.ts`              | The event name and payload type are the only contract. Each app compiles it into its own bundle, so there is no runtime coupling.                                                                                                             |
+| RxJS stream exposed as a signal                        | `projects/shell/src/app/app.ts`                  | `fromEvent` + `scan` build the cart; `toSignal` and `computed` feed the template.                                                                                                                                                             |
+| Loader passed into the routes                          | `projects/shell/src/app/app.routes.ts`           | Routes depend on a small `LoadRemote` type, not on the library (dependency inversion), so tests use a fake loader. Uses the loader returned by `initFederation()`, since the global `loadRemoteModule` is deprecated in Native Federation v4. |
+| Fallback route on load failure                         | `projects/shell/src/app/remote-unavailable.ts`   | A failing remote degrades one section instead of breaking the whole shell.                                                                                                                                                                    |
 
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
+## Tests
 
-## Running unit tests
+- `product-list.spec.ts`: clicking a product dispatches `add-to-cart` with that product.
+- `app.spec.ts`: the shell's cart summary reacts to `add-to-cart` events.
+- `app.routes.spec.ts`: `/` redirects to the remote's routes, and a rejected load renders the fallback.
 
-To execute unit tests with the [Vitest](https://vitest.dev/) test runner, use the following command:
+## Limits
 
-```bash
-ng test
-```
-
-## Running end-to-end tests
-
-For end-to-end (e2e) testing, run:
-
-```bash
-ng e2e
-```
-
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
-
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+Both apps live in one workspace for convenience. In a real setup each team would
+own a separate repository and pipeline, and the shared contract would be a
+versioned package.
